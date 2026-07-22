@@ -38,8 +38,6 @@ class YouTube(commands.Cog):
             def after_playing(error):
                 if error:
                     print(f"[再生エラー]: {error}")
-
-                # 無限再帰を防止するため、イベントループで安全に次の曲を呼び出し
                 self.bot.loop.call_soon_threadsafe(self.play_next, ctx)
 
             ctx.voice_client.play(source, after=after_playing)
@@ -73,7 +71,6 @@ class YouTube(commands.Cog):
 
         channel = ctx.author.voice.channel
 
-        # すでにどこかのVCに接続している場合
         if ctx.voice_client:
             if ctx.voice_client.channel.id == channel.id:
                 return await ctx.send(f"すでに **{channel.name}** に接続しています。")
@@ -83,23 +80,21 @@ class YouTube(commands.Cog):
             await channel.connect()
             await ctx.send(f"🔊 **{channel.name}** に接続しました！")
 
-@commands.command(name="play", aliases=["p"])
-async def play(self, ctx, *, query: str):
+    @commands.command(name="play", aliases=["p"])
+    async def play(self, ctx, *, query: str):
         """!p <URLまたはキーワード> [random] で再生"""
         if not ctx.author.voice:
             return await ctx.send("先にボイスチャンネルに入ってください！")
 
-        # 未接続、または別チャンネルにいる場合は移動して接続
         if not ctx.voice_client:
             await ctx.author.voice.channel.connect()
         elif ctx.voice_client.channel.id != ctx.author.voice.channel.id:
             await ctx.voice_client.move_to(ctx.author.voice.channel)
 
-        # 末尾に " random" がついているか判定
         is_random = False
         if query.lower().endswith(" random"):
             is_random = True
-            query = query[:-7].strip() # URLや検索語句から " random" を除去
+            query = query[:-7].strip()
 
         await ctx.send("🔎 情報を取得中...")
 
@@ -118,11 +113,8 @@ async def play(self, ctx, *, query: str):
             self.queues[guild_id] = []
 
         entries = data.get("entries") if "entries" in data else [data]
-
-        # None要素を除外したリストを作成
         valid_entries = [e for e in entries if e]
 
-        # random 指定があり、かつプレイリスト（複数曲）の場合はシャッフル
         if is_random and len(valid_entries) > 1:
             random.shuffle(valid_entries)
 
@@ -143,8 +135,8 @@ async def play(self, ctx, *, query: str):
         if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
             self.play_next(ctx)
 
-@commands.command(name="skip", aliases=["s"])
-async def skip(self, ctx):
+    @commands.command(name="skip", aliases=["s"])
+    async def skip(self, ctx):
         """!s でスキップ"""
         if ctx.voice_client and ctx.voice_client.is_playing():
             ctx.voice_client.stop()
@@ -152,8 +144,8 @@ async def skip(self, ctx):
         else:
             await ctx.send("現在再生中の曲はありません。")
 
-@commands.command(name="stop")
-async def stop(self, ctx):
+    @commands.command(name="stop")
+    async def stop(self, ctx):
         """!stop で停止＆切断"""
         guild_id = ctx.guild.id
         if guild_id in self.queues:
