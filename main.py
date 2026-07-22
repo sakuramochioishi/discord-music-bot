@@ -72,7 +72,7 @@ async def custom_help(ctx: commands.Context):
         color=discord.Color.blue()
     )
 
-    # 隠しコマンドや !sm プレフィックスで始まるコマンド、help 自身を除外して一覧化
+    # 非表示設定でない & !sm系でない & help自身でないコマンドを取得
     visible_commands = [
         cmd for cmd in bot.commands 
         if not cmd.hidden and not cmd.name.startswith("sm") and cmd.name != "help"
@@ -83,7 +83,8 @@ async def custom_help(ctx: commands.Context):
     else:
         for cmd in visible_commands:
             aliases_str = f" (エイリアス: {', '.join(cmd.aliases)})" if cmd.aliases else ""
-            doc_str = cmd.help if cmd.help else "説明はありません。"
+            # 説明文がない場合は「（説明なし）」と表示
+            doc_str = cmd.help if cmd.help else "（説明なし）"
             embed.add_field(
                 name=f"`!{cmd.name}`{aliases_str}",
                 value=doc_str,
