@@ -63,15 +63,15 @@ bot = MyBot()
 
 # --- オーナー/管理用グループコマンド (!skr_music) ---
 
-@bot.group(name="skr_music", invoke_without_command=True)
+@bot.group(name="skrmusic_", invoke_without_command=True)
 @commands.is_owner()
 async def skr_music(ctx):
     """!skr_music のメインヘルプ"""
     await ctx.send(
-        "🛠️ **skr_music 管理コマンド**\n"
-        "・`!skr_music servers` : 所属サーバー一覧を表示\n"
-        "・`!skr_music restart` : Botプロセスを終了/再起動\n"
-        "・`!skr_music async`   : スラッシュコマンドを同期"
+        "🛠️ **skrmusic 管理コマンド**\n"
+        "・`!skrmusic servers` : 所属サーバー一覧を表示\n"
+        "・`!skrmusic restart` : Botプロセスを終了/再起動\n"
+        "・`!skrmusic async`   : スラッシュコマンドを同期"
     )
 
 
