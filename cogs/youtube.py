@@ -2,6 +2,7 @@ import asyncio
 import discord
 from discord.ext import commands
 import yt_dlp
+import random
 
 # ストリーミング用の設定（ダウンロードしない）
 YTDL_OPTIONS = {
@@ -82,9 +83,9 @@ class YouTube(commands.Cog):
             await channel.connect()
             await ctx.send(f"🔊 **{channel.name}** に接続しました！")
 
-    @commands.command(name="play", aliases=["p"])
-    async def play(self, ctx, *, query: str):
-        """!p <URLまたはキーワード> で再生"""
+@commands.command(name="play", aliases=["p"])
+async def play(self, ctx, *, query: str):
+        """!p <URLまたはキーワード> [random] で再生"""
         if not ctx.author.voice:
             return await ctx.send("先にボイスチャンネルに入ってください！")
 
@@ -93,6 +94,12 @@ class YouTube(commands.Cog):
             await ctx.author.voice.channel.connect()
         elif ctx.voice_client.channel.id != ctx.author.voice.channel.id:
             await ctx.voice_client.move_to(ctx.author.voice.channel)
+
+        # 末尾に " random" がついているか判定
+        is_random = False
+        if query.lower().endswith(" random"):
+            is_random = True
+            query = query[:-7].strip() # URLや検索語句から " random" を除去
 
         await ctx.send("🔎 情報を取得中...")
 
@@ -111,12 +118,16 @@ class YouTube(commands.Cog):
             self.queues[guild_id] = []
 
         entries = data.get("entries") if "entries" in data else [data]
+
+        # None要素を除外したリストを作成
+        valid_entries = [e for e in entries if e]
+
+        # random 指定があり、かつプレイリスト（複数曲）の場合はシャッフル
+        if is_random and len(valid_entries) > 1:
+            random.shuffle(valid_entries)
+
         added_count = 0
-
-        for entry in entries:
-            if not entry:
-                continue
-
+        for entry in valid_entries:
             item = {
                 "title": entry.get("title", "Unknown Title"),
                 "url": entry.get("url"),
@@ -124,13 +135,16 @@ class YouTube(commands.Cog):
             self.queues[guild_id].append(item)
             added_count += 1
 
-        await ctx.send(f"✅ {added_count} 曲をキューに追加しました！")
+        if is_random and added_count > 1:
+            await ctx.send(f"🔀 シャッフルして {added_count} 曲をキューに追加しました！")
+        else:
+            await ctx.send(f"✅ {added_count} 曲をキューに追加しました！")
 
         if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
             self.play_next(ctx)
 
-    @commands.command(name="skip", aliases=["s"])
-    async def skip(self, ctx):
+@commands.command(name="skip", aliases=["s"])
+async def skip(self, ctx):
         """!s でスキップ"""
         if ctx.voice_client and ctx.voice_client.is_playing():
             ctx.voice_client.stop()
@@ -138,8 +152,8 @@ class YouTube(commands.Cog):
         else:
             await ctx.send("現在再生中の曲はありません。")
 
-    @commands.command(name="stop")
-    async def stop(self, ctx):
+@commands.command(name="stop")
+async def stop(self, ctx):
         """!stop で停止＆切断"""
         guild_id = ctx.guild.id
         if guild_id in self.queues:

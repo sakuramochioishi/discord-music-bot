@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 # .env ファイルの読み込み
 load_dotenv()
-TOKEN = os.getenv("token")  # .env の記述に合わせて "DISCORD_TOKEN" 等に変更してください
+TOKEN = os.getenv("token")
 
 intents = discord.Intents.default()
 intents.message_content = True  # テキストコマンド読み取りに必須
@@ -19,7 +19,7 @@ intents.voice_states = True     # ボイスチャンネル接続に必須
 class MyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
-        self.remove_command("help")
+        self.remove_command("help")  # デフォルトのhelpコマンドを無効化
 
     async def setup_hook(self):
         # cogs フォルダ内のファイルを自動ロード
@@ -61,31 +61,51 @@ class MyBot(commands.Bot):
 bot = MyBot()
 
 
-# --- オーナー/管理用グループコマンド (!skr_music) ---
+# --- 一般コマンド ---
 
-@bot.group(name="skrmusic_", invoke_without_command=True)
-@commands.is_owner()
-async def skr_music(ctx):
-    """!skr_music のメインヘルプ"""
-    await ctx.send(
-        "🛠️ **skrmusic 管理コマンド**\n"
-        "・`!skrmusic servers` : 所属サーバー一覧を表示\n"
-        "・`!skrmusic restart` : Botプロセスを終了/再起動\n"
-        "・`!skrmusic async`   : スラッシュコマンドを同期"
+@bot.command(name="help")
+async def custom_help(ctx: commands.Context):
+    """!sm 以外の一般コマンドの説明一覧を表示"""
+    embed = discord.Embed(
+        title="📖 コマンド一覧",
+        description="利用可能な標準コマンド一覧です。（`!sm` 系コマンドを除く）",
+        color=discord.Color.blue()
     )
 
+    # 隠しコマンドや !sm プレフィックスで始まるコマンド、help 自身を除外して一覧化
+    visible_commands = [
+        cmd for cmd in bot.commands 
+        if not cmd.hidden and not cmd.name.startswith("sm") and cmd.name != "help"
+    ]
 
-@skr_music.command(name="servers")
+    if not visible_commands:
+        embed.add_field(name="お知らせ", value="現在表示できる標準コマンドはありません。", inline=False)
+    else:
+        for cmd in visible_commands:
+            aliases_str = f" (エイリアス: {', '.join(cmd.aliases)})" if cmd.aliases else ""
+            doc_str = cmd.help if cmd.help else "説明はありません。"
+            embed.add_field(
+                name=f"`!{cmd.name}`{aliases_str}",
+                value=doc_str,
+                inline=False
+            )
+
+    await ctx.send(embed=embed)
+
+
+# --- 管理用コマンド (!sm_) ---
+
+@bot.command(name="sm_servers")
 @commands.is_owner()
-async def skr_music_servers(ctx):
-    """所属しているサーバー一覧と人数を表示"""
+async def sm_servers(ctx: commands.Context):
+    """【オーナー限定】所属しているサーバー一覧とメンバー数をEmbedで表示"""
     guilds = bot.guilds
     if not guilds:
         return await ctx.send("現在どのサーバーにも参加していません。")
 
     embed = discord.Embed(
         title=f"🌐 参加サーバー一覧 (計 {len(guilds)} サーバー)",
-        color=discord.Color.blue()
+        color=discord.Color.green()
     )
 
     guild_list_str = ""
@@ -100,14 +120,14 @@ async def skr_music_servers(ctx):
     await ctx.send(embed=embed)
 
 
-@skr_music.command(name="restart")
+@bot.command(name="sm_restart")
 @commands.is_owner()
-async def skr_music_restart(ctx):
-    """VCを切断した上でBotのプロセスを終了（再起動処理）"""
-    await ctx.send("**再起動処理を実行中 (VCを切断してプロセスを終了します)**")
+async def sm_restart(ctx: commands.Context):
+    """【オーナー限定】VCを切断した上でBotのプロセスを終了（再起動処理）"""
+    await ctx.send("🔄 **再起動処理を実行中 (VCを切断してプロセスを終了します)**")
     print("[SYSTEM] Disconnecting from VCs and exiting process...")
 
-    # 💡 接続中のボイスチャンネルがあればすべて自動切断
+    # 接続中のボイスチャンネルがあればすべて自動切断
     for vc in bot.voice_clients:
         try:
             await vc.disconnect()
@@ -116,18 +136,6 @@ async def skr_music_restart(ctx):
 
     await bot.close()
     sys.exit(0)
-
-
-@skr_music.command(name="async")
-@commands.is_owner()
-async def skr_music_async(ctx):
-    """スラッシュコマンドの手動同期"""
-    msg = await ctx.send("⚡ スラッシュコマンドを同期中...")
-    try:
-        synced = await bot.tree.sync()
-        await msg.edit(content=f"✅ {len(synced)} 件のスラッシュコマンドを同期しました！")
-    except Exception as e:
-        await msg.edit(content=f"❌ 同期中にエラーが発生しました: {e}")
 
 
 # --- 起動処理 ---
