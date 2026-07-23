@@ -18,8 +18,15 @@ YTDL_OPTIONS = {
     "ignoreerrors": True,
 }
 
+# ニコニコ動画等の403エラーを回避するための User-Agent 文字列
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# ★ FFMPEG_OPTIONS に User-Agent を指定してニコニコ動画の直アクセス拒否を回避
 FFMPEG_OPTIONS = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "before_options": (
+        f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+        f'-user_agent "{USER_AGENT}"'
+    ),
     "options": "-vn",
 }
 
@@ -43,7 +50,6 @@ class QueuePaginator(discord.ui.View):
         self.prev_button.disabled = self.current_page == 0
         self.next_button.disabled = self.current_page >= self.max_pages - 1
 
-    # 修正箇所: カッコの重複 ((self) を修正
     def create_embed(self) -> discord.Embed:
         """現在のページの Embed を生成"""
         start = self.current_page * self.per_page
@@ -111,7 +117,12 @@ class YouTube(commands.Cog):
 
             # 最新の音声ストリームURLを取得（URL期限切れ防止）
             try:
-                with yt_dlp.YoutubeDL({"format": "bestaudio/best", "quiet": True}) as ytdl_single:
+                single_opts = {
+                    "format": "bestaudio/best",
+                    "quiet": True,
+                    "http_headers": {"User-Agent": USER_AGENT},
+                }
+                with yt_dlp.YoutubeDL(single_opts) as ytdl_single:
                     info = ytdl_single.extract_info(target_url, download=False)
                     stream_url = info.get("url", target_url)
             except Exception as e:
