@@ -6,7 +6,7 @@ import random
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# ★ 高速化に最適化した YTDL 設定（ニコニコ用ヘッダー追加）
+# ★ YTDL 基本設定
 YTDL_OPTIONS = {
     "format": "bestaudio/best",
     "noplaylist": False,
@@ -24,13 +24,15 @@ YTDL_OPTIONS = {
     },
 }
 
-# ★ ニコニコ動画のブロックを回避するための FFmpeg オプション（User-Agent + Referer）
+# パイプ入力用の FFmpeg オプション
+FFMPEG_PIPE_OPTIONS = {
+    "before_options": "-f s16le -ar 48000 -ac 2",
+    "options": "-vn",
+}
+
+# 通常URL用の FFmpeg オプション
 FFMPEG_OPTIONS = {
-    "before_options": (
-        f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-        f'-user_agent "{USER_AGENT}" '
-        f'-headers "Referer: https://www.nicovideo.jp/\r\n"'
-    ),
+    "before_options": f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -user_agent \"{USER_AGENT}\"",
     "options": "-vn",
 }
 
@@ -114,25 +116,45 @@ class YouTube(commands.Cog):
         if guild_id in self.queues and len(self.queues[guild_id]) > 0:
             current_item = self.queues[guild_id].pop(0)
             target_url = current_item["url"]
-            stream_url = target_url
 
-            # 最新の音声ストリームURLを取得（ヘッダー付きで取得）
-            try:
-                single_opts = {
-                    "format": "bestaudio/best",
-                    "quiet": True,
-                    "http_headers": {
-                        "User-Agent": USER_AGENT,
-                        "Referer": "https://www.nicovideo.jp/",
-                    },
-                }
-                with yt_dlp.YoutubeDL(single_opts) as ytdl_single:
-                    info = ytdl_single.extract_info(target_url, download=False)
-                    stream_url = info.get("url", target_url)
-            except Exception as e:
-                print(f"[ストリーム取得エラー]: {e}")
+            # ニコニコ動画の場合は yt-dlp 経由で直接パイプ出力させて 403 を回避
+            if "nicovideo.jp" in target_url or "nico.ms" in target_url:
+                try:
+                    # yt-dlp をサブプロセスとして実行し、stdout から標準 PCM で読み出す
+                    process = asyncio.subprocess.create_subprocess_exec(
+                        "yt-dlp",
+                        "-o", "-",
+                        "-f", "bestaudio/best",
+                        "--add-header", f"User-Agent:{USER_AGENT}",
+                        "--add-header", "Referer:https://www.nicovideo.jp/",
+                        target_url,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    # 同期関数内で loop 取得
+                    loop = self.bot.loop
+                    proc = loop.run_until_complete(process) if not loop.is_running() else asyncio.run_coroutine_threadsafe(process, loop).result()
+                    source = discord.FFmpegPCMAudio(proc.stdout, pipe=True)
+                except Exception as e:
+                    print(f"[ニコニコパイプ処理エラー]: {e}")
+                    # フォールバック処理
+                    source = discord.FFmpegPCMAudio(target_url, **FFMPEG_OPTIONS)
+            else:
+                # YouTube 等は通常通り URL 直接指定
+                try:
+                    single_opts = {
+                        "format": "bestaudio/best",
+                        "quiet": True,
+                        "http_headers": {"User-Agent": USER_AGENT},
+                    }
+                    with yt_dlp.YoutubeDL(single_opts) as ytdl_single:
+                        info = ytdl_single.extract_info(target_url, download=False)
+                        stream_url = info.get("url", target_url)
+                except Exception as e:
+                    print(f"[ストリーム取得エラー]: {e}")
+                    stream_url = target_url
 
-            source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
+                source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
 
             def after_playing(error):
                 if error:
