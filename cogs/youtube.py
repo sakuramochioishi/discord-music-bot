@@ -11,12 +11,11 @@ YTDL_OPTIONS = {
     "quiet": True,
     "no_warnings": True,
     "default_search": "auto",
-    # --- ⚡ 爆速化オプション ---
-    "extract_flat": "in_playlist",  # プレイリスト時はメタデータを深追いせず高速取得
-    "skip_download": True,         # ダウンロードを完全にスキップ
-    "source_address": "0.0.0.0",   # IPv4に固定して接続遅延を防止
-    "lazy_playlist": True,         # プレイリストを段階的に遅延読み込み
-    "ignoreerrors": True,          # 削除済み動画があっても止まらずスキップ
+    "extract_flat": "in_playlist",
+    "skip_download": True,
+    "source_address": "0.0.0.0",
+    "lazy_playlist": True,
+    "ignoreerrors": True,
 }
 
 FFMPEG_OPTIONS = {
@@ -25,6 +24,76 @@ FFMPEG_OPTIONS = {
 }
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
+
+
+# --- キューのページネーション用 UI (ボタン) ---
+class QueuePaginator(discord.ui.View):
+    def __init__(self, queue: list, author: discord.Member, per_page: int = 10):
+        super().__init__(timeout=60)  # 60秒でボタンを無効化
+        self.queue = queue
+        self.author = author
+        self.per_page = per_page
+        self.current_page = 0
+        self.max_pages = (len(queue) - 1) // per_page + 1
+        self.message = None
+        self.update_buttons()
+
+    def update_buttons(self):
+        """ページの端に到達した際にボタンの有効/無効を切り替える"""
+        self.prev_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page >= self.max_pages - 1
+
+    # 修正箇所: カッコの重複 ((self) を修正
+    def create_embed(self) -> discord.Embed:
+        """現在のページの Embed を生成"""
+        start = self.current_page * self.per_page
+        end = start + self.per_page
+        page_items = self.queue[start:end]
+
+        embed = discord.Embed(
+            title="📋 再生キュー一覧",
+            color=discord.Color.blue()
+        )
+
+        description = ""
+        for idx, item in enumerate(page_items, start=start + 1):
+            description += f"**{idx}.** {item['title']}\n"
+
+        embed.description = description
+        embed.set_footer(
+            text=f"ページ {self.current_page + 1} / {self.max_pages} (合計 {len(self.queue)} 曲)"
+        )
+        return embed
+
+    @discord.ui.button(label="◀ 前へ", style=discord.ButtonStyle.secondary, custom_id="prev")
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.author:
+            return await interaction.response.send_message("コマンドを実行したユーザーのみ操作できます。", ephemeral=True)
+
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
+    @discord.ui.button(label="次へ ▶", style=discord.ButtonStyle.secondary, custom_id="next")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.author:
+            return await interaction.response.send_message("コマンドを実行したユーザーのみ操作できます。", ephemeral=True)
+
+        if self.current_page < self.max_pages - 1:
+            self.current_page += 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
+    async def on_timeout(self):
+        """タイムアウト時にボタンを無効化"""
+        for item in self.children:
+            item.disabled = True
+        try:
+            if self.message:
+                await self.message.edit(view=self)
+        except Exception:
+            pass
 
 
 class YouTube(commands.Cog):
@@ -37,18 +106,16 @@ class YouTube(commands.Cog):
         guild_id = ctx.guild.id
         if guild_id in self.queues and len(self.queues[guild_id]) > 0:
             current_item = self.queues[guild_id].pop(0)
+            target_url = current_item["url"]
+            stream_url = target_url
 
-            # extract_flat 経由だと再生直前に本当のストリームURLを取得する必要がある場合があるため対処
-            stream_url = current_item["url"]
-
-            # URLが直接の音声ストリームURL（googlevideo.com等）でない場合は直前に1曲だけ詳細取得
-            if not stream_url.startswith("http") or "googlevideo.com" not in stream_url:
-                try:
-                    with yt_dlp.YoutubeDL({"format": "bestaudio/best", "quiet": True}) as ytdl_single:
-                        info = ytdl_single.extract_info(stream_url, download=False)
-                        stream_url = info.get("url", stream_url)
-                except Exception as e:
-                    print(f"[ストリーム取得エラー]: {e}")
+            # 最新の音声ストリームURLを取得（URL期限切れ防止）
+            try:
+                with yt_dlp.YoutubeDL({"format": "bestaudio/best", "quiet": True}) as ytdl_single:
+                    info = ytdl_single.extract_info(target_url, download=False)
+                    stream_url = info.get("url", target_url)
+            except Exception as e:
+                print(f"[ストリーム取得エラー]: {e}")
 
             source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
 
@@ -57,10 +124,11 @@ class YouTube(commands.Cog):
                     print(f"[再生エラー]: {error}")
                 self.bot.loop.call_soon_threadsafe(self.play_next, ctx)
 
-            ctx.voice_client.play(source, after=after_playing)
-            asyncio.run_coroutine_threadsafe(
-                ctx.send(f"🎵 **再生中** {current_item['title']}"), self.bot.loop
-            )
+            if ctx.voice_client:
+                ctx.voice_client.play(source, after=after_playing)
+                asyncio.run_coroutine_threadsafe(
+                    ctx.send(f"🎵 **再生中** {current_item['title']}"), self.bot.loop
+                )
         else:
             asyncio.run_coroutine_threadsafe(
                 ctx.send("再生リストが空になりました。"), self.bot.loop
@@ -137,7 +205,6 @@ class YouTube(commands.Cog):
 
         added_count = 0
         for entry in valid_entries:
-            # extract_flat 使用時は webpage_url または url を保持
             video_url = entry.get("webpage_url") or entry.get("url")
             if not video_url and entry.get("id"):
                 video_url = f"https://www.youtube.com/watch?v={entry.get('id')}"
@@ -176,6 +243,23 @@ class YouTube(commands.Cog):
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
             await ctx.send("⏹️ 停止して切断しました。")
+
+    @commands.command(name="view", aliases=["v", "q", "queue"])
+    async def view(self, ctx):
+        """!view または !v で再生キュー一覧を表示"""
+        guild_id = ctx.guild.id
+        queue = self.queues.get(guild_id, [])
+
+        if not queue:
+            return await ctx.send("📋 キューは現在空です。")
+
+        paginator = QueuePaginator(queue, ctx.author, per_page=10)
+        embed = paginator.create_embed()
+
+        if paginator.max_pages > 1:
+            paginator.message = await ctx.send(embed=embed, view=paginator)
+        else:
+            await ctx.send(embed=embed)
 
 
 async def setup(bot):
