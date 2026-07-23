@@ -4,7 +4,9 @@ from discord.ext import commands
 import yt_dlp
 import random
 
-# ★ 高速化に最適化した YTDL 設定
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# ★ 高速化に最適化した YTDL 設定（ニコニコ用ヘッダー追加）
 YTDL_OPTIONS = {
     "format": "bestaudio/best",
     "noplaylist": False,
@@ -16,16 +18,18 @@ YTDL_OPTIONS = {
     "source_address": "0.0.0.0",
     "lazy_playlist": True,
     "ignoreerrors": True,
+    "http_headers": {
+        "User-Agent": USER_AGENT,
+        "Referer": "https://www.nicovideo.jp/",
+    },
 }
 
-# ニコニコ動画等の403エラーを回避するための User-Agent 文字列
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-# ★ FFMPEG_OPTIONS に User-Agent を指定してニコニコ動画の直アクセス拒否を回避
+# ★ ニコニコ動画のブロックを回避するための FFmpeg オプション（User-Agent + Referer）
 FFMPEG_OPTIONS = {
     "before_options": (
         f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-        f'-user_agent "{USER_AGENT}"'
+        f'-user_agent "{USER_AGENT}" '
+        f'-headers "Referer: https://www.nicovideo.jp/\r\n"'
     ),
     "options": "-vn",
 }
@@ -36,7 +40,7 @@ ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 # --- キューのページネーション用 UI (ボタン) ---
 class QueuePaginator(discord.ui.View):
     def __init__(self, queue: list, author: discord.Member, per_page: int = 10):
-        super().__init__(timeout=60)  # 60秒でボタンを無効化
+        super().__init__(timeout=60)
         self.queue = queue
         self.author = author
         self.per_page = per_page
@@ -46,12 +50,10 @@ class QueuePaginator(discord.ui.View):
         self.update_buttons()
 
     def update_buttons(self):
-        """ページの端に到達した際にボタンの有効/無効を切り替える"""
         self.prev_button.disabled = self.current_page == 0
         self.next_button.disabled = self.current_page >= self.max_pages - 1
 
     def create_embed(self) -> discord.Embed:
-        """現在のページの Embed を生成"""
         start = self.current_page * self.per_page
         end = start + self.per_page
         page_items = self.queue[start:end]
@@ -92,7 +94,6 @@ class QueuePaginator(discord.ui.View):
             await interaction.response.edit_message(embed=self.create_embed(), view=self)
 
     async def on_timeout(self):
-        """タイムアウト時にボタンを無効化"""
         for item in self.children:
             item.disabled = True
         try:
@@ -105,7 +106,7 @@ class QueuePaginator(discord.ui.View):
 class YouTube(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.queues = {}  # サーバーごとの再生キュー
+        self.queues = {}
 
     def play_next(self, ctx):
         """キュー内の次の曲を再生"""
@@ -115,12 +116,15 @@ class YouTube(commands.Cog):
             target_url = current_item["url"]
             stream_url = target_url
 
-            # 最新の音声ストリームURLを取得（URL期限切れ防止）
+            # 最新の音声ストリームURLを取得（ヘッダー付きで取得）
             try:
                 single_opts = {
                     "format": "bestaudio/best",
                     "quiet": True,
-                    "http_headers": {"User-Agent": USER_AGENT},
+                    "http_headers": {
+                        "User-Agent": USER_AGENT,
+                        "Referer": "https://www.nicovideo.jp/",
+                    },
                 }
                 with yt_dlp.YoutubeDL(single_opts) as ytdl_single:
                     info = ytdl_single.extract_info(target_url, download=False)
@@ -147,7 +151,6 @@ class YouTube(commands.Cog):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        """VC人数変化を検知して誰もいなくなったら自動切断"""
         if before.channel is not None:
             voice_client = member.guild.voice_client
             if voice_client and voice_client.channel.id == before.channel.id:
@@ -161,7 +164,6 @@ class YouTube(commands.Cog):
 
     @commands.command(name="join", aliases=["j"])
     async def join(self, ctx):
-        """!j または !join でVCに接続（移動）"""
         if not ctx.author.voice:
             return await ctx.send("先にボイスチャンネルに入ってください！")
 
@@ -178,7 +180,6 @@ class YouTube(commands.Cog):
 
     @commands.command(name="play", aliases=["p"])
     async def play(self, ctx, *, query: str):
-        """!p <URLまたはキーワード> [random] で再生"""
         if not ctx.author.voice:
             return await ctx.send("先にボイスチャンネルに入ってください！")
 
@@ -237,7 +238,6 @@ class YouTube(commands.Cog):
 
     @commands.command(name="skip", aliases=["s"])
     async def skip(self, ctx):
-        """!s でスキップ"""
         if ctx.voice_client and ctx.voice_client.is_playing():
             ctx.voice_client.stop()
             await ctx.send("⏭️ スキップしました。")
@@ -246,7 +246,6 @@ class YouTube(commands.Cog):
 
     @commands.command(name="stop")
     async def stop(self, ctx):
-        """!stop で停止＆切断"""
         guild_id = ctx.guild.id
         if guild_id in self.queues:
             self.queues[guild_id].clear()
@@ -257,7 +256,6 @@ class YouTube(commands.Cog):
 
     @commands.command(name="view", aliases=["v", "q", "queue"])
     async def view(self, ctx):
-        """!view または !v で再生キュー一覧を表示"""
         guild_id = ctx.guild.id
         queue = self.queues.get(guild_id, [])
 
