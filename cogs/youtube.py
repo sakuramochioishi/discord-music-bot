@@ -4,13 +4,19 @@ from discord.ext import commands
 import yt_dlp
 import random
 
-# ストリーミング用の設定（ダウンロードしない）
+# ★ 高速化に最適化した YTDL 設定
 YTDL_OPTIONS = {
     "format": "bestaudio/best",
     "noplaylist": False,
     "quiet": True,
     "no_warnings": True,
     "default_search": "auto",
+    # --- ⚡ 爆速化オプション ---
+    "extract_flat": "in_playlist",  # プレイリスト時はメタデータを深追いせず高速取得
+    "skip_download": True,         # ダウンロードを完全にスキップ
+    "source_address": "0.0.0.0",   # IPv4に固定して接続遅延を防止
+    "lazy_playlist": True,         # プレイリストを段階的に遅延読み込み
+    "ignoreerrors": True,          # 削除済み動画があっても止まらずスキップ
 }
 
 FFMPEG_OPTIONS = {
@@ -31,7 +37,18 @@ class YouTube(commands.Cog):
         guild_id = ctx.guild.id
         if guild_id in self.queues and len(self.queues[guild_id]) > 0:
             current_item = self.queues[guild_id].pop(0)
+
+            # extract_flat 経由だと再生直前に本当のストリームURLを取得する必要がある場合があるため対処
             stream_url = current_item["url"]
+
+            # URLが直接の音声ストリームURL（googlevideo.com等）でない場合は直前に1曲だけ詳細取得
+            if not stream_url.startswith("http") or "googlevideo.com" not in stream_url:
+                try:
+                    with yt_dlp.YoutubeDL({"format": "bestaudio/best", "quiet": True}) as ytdl_single:
+                        info = ytdl_single.extract_info(stream_url, download=False)
+                        stream_url = info.get("url", stream_url)
+                except Exception as e:
+                    print(f"[ストリーム取得エラー]: {e}")
 
             source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
 
@@ -120,9 +137,14 @@ class YouTube(commands.Cog):
 
         added_count = 0
         for entry in valid_entries:
+            # extract_flat 使用時は webpage_url または url を保持
+            video_url = entry.get("webpage_url") or entry.get("url")
+            if not video_url and entry.get("id"):
+                video_url = f"https://www.youtube.com/watch?v={entry.get('id')}"
+
             item = {
                 "title": entry.get("title", "Unknown Title"),
-                "url": entry.get("url"),
+                "url": video_url,
             }
             self.queues[guild_id].append(item)
             added_count += 1
