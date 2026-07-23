@@ -1,4 +1,5 @@
 import asyncio
+import subprocess
 import discord
 from discord.ext import commands
 import yt_dlp
@@ -24,15 +25,9 @@ YTDL_OPTIONS = {
     },
 }
 
-# パイプ入力用の FFmpeg オプション
-FFMPEG_PIPE_OPTIONS = {
-    "before_options": "-f s16le -ar 48000 -ac 2",
-    "options": "-vn",
-}
-
-# 通常URL用の FFmpeg オプション
+# 通常URL (YouTube等) 用の FFmpeg オプション
 FFMPEG_OPTIONS = {
-    "before_options": f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -user_agent \"{USER_AGENT}\"",
+    "before_options": f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -user_agent "{USER_AGENT}"',
     "options": "-vn",
 }
 
@@ -109,47 +104,58 @@ class YouTube(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.queues = {}
+        self.active_processes = {}  # サーバーごとの yt-dlp サブプロセス管理
 
-    def play_next(self, ctx):
-        """キュー内の次の曲を再生"""
+    async def play_next(self, ctx):
+        """キュー内の次の曲を再生 (async化してブロッキングを防止)"""
         guild_id = ctx.guild.id
+
+        # 前回のプロセスが残っていれば終了処理
+        if guild_id in self.active_processes:
+            proc = self.active_processes.pop(guild_id, None)
+            if proc and proc.poll() is None:
+                proc.kill()
+
         if guild_id in self.queues and len(self.queues[guild_id]) > 0:
             current_item = self.queues[guild_id].pop(0)
             target_url = current_item["url"]
 
-            # ニコニコ動画の場合は yt-dlp 経由で直接パイプ出力させて 403 を回避
+            # ニコニコ動画の場合は subprocess.Popen で stdout パイプ出力
             if "nicovideo.jp" in target_url or "nico.ms" in target_url:
                 try:
-                    # yt-dlp をサブプロセスとして実行し、stdout から標準 PCM で読み出す
-                    process = asyncio.subprocess.create_subprocess_exec(
-                        "yt-dlp",
-                        "-o", "-",
-                        "-f", "bestaudio/best",
-                        "--add-header", f"User-Agent:{USER_AGENT}",
-                        "--add-header", "Referer:https://www.nicovideo.jp/",
-                        target_url,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.DEVNULL,
+                    proc = subprocess.Popen(
+                        [
+                            "yt-dlp",
+                            "-o", "-",
+                            "-f", "bestaudio/best",
+                            "--add-header", f"User-Agent:{USER_AGENT}",
+                            "--add-header", "Referer:https://www.nicovideo.jp/",
+                            target_url,
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
                     )
-                    # 同期関数内で loop 取得
-                    loop = self.bot.loop
-                    proc = loop.run_until_complete(process) if not loop.is_running() else asyncio.run_coroutine_threadsafe(process, loop).result()
+                    self.active_processes[guild_id] = proc
                     source = discord.FFmpegPCMAudio(proc.stdout, pipe=True)
                 except Exception as e:
-                    print(f"[ニコニコパイプ処理エラー]: {e}")
-                    # フォールバック処理
+                    print(f"[ニコニコパイプエラー]: {e}")
                     source = discord.FFmpegPCMAudio(target_url, **FFMPEG_OPTIONS)
             else:
-                # YouTube 等は通常通り URL 直接指定
-                try:
-                    single_opts = {
-                        "format": "bestaudio/best",
-                        "quiet": True,
-                        "http_headers": {"User-Agent": USER_AGENT},
-                    }
+                # YouTube 等は通常通り URL 直接指定 (run_in_executorで非同期処理化)
+                loop = asyncio.get_running_loop()
+                single_opts = {
+                    "format": "bestaudio/best",
+                    "quiet": True,
+                    "http_headers": {"User-Agent": USER_AGENT},
+                }
+                
+                def fetch_info():
                     with yt_dlp.YoutubeDL(single_opts) as ytdl_single:
-                        info = ytdl_single.extract_info(target_url, download=False)
-                        stream_url = info.get("url", target_url)
+                        return ytdl_single.extract_info(target_url, download=False)
+
+                try:
+                    info = await loop.run_in_executor(None, fetch_info)
+                    stream_url = info.get("url", target_url)
                 except Exception as e:
                     print(f"[ストリーム取得エラー]: {e}")
                     stream_url = target_url
@@ -159,17 +165,14 @@ class YouTube(commands.Cog):
             def after_playing(error):
                 if error:
                     print(f"[再生エラー]: {error}")
-                self.bot.loop.call_soon_threadsafe(self.play_next, ctx)
+                # スレッドセーフに非同期関数 play_next を実行
+                asyncio.run_coroutine_threadsafe(self.play_next(ctx), self.bot.loop)
 
             if ctx.voice_client:
                 ctx.voice_client.play(source, after=after_playing)
-                asyncio.run_coroutine_threadsafe(
-                    ctx.send(f"🎵 **再生中** {current_item['title']}"), self.bot.loop
-                )
+                await ctx.send(f"🎵 **再生中** {current_item['title']}")
         else:
-            asyncio.run_coroutine_threadsafe(
-                ctx.send("再生リストが空になりました。"), self.bot.loop
-            )
+            await ctx.send("再生リストが空になりました。")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
@@ -181,6 +184,10 @@ class YouTube(commands.Cog):
                     guild_id = member.guild.id
                     if guild_id in self.queues:
                         self.queues[guild_id].clear()
+                    if guild_id in self.active_processes:
+                        proc = self.active_processes.pop(guild_id, None)
+                        if proc and proc.poll() is None:
+                            proc.kill()
                     await voice_client.disconnect()
                     print(f"[自動切断] {before.channel.name} に誰もいなくなったため自動切断しました。")
 
@@ -256,11 +263,12 @@ class YouTube(commands.Cog):
             await ctx.send(f"✅ {added_count} 曲をキューに追加しました！")
 
         if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
-            self.play_next(ctx)
+            await self.play_next(ctx)
 
     @commands.command(name="skip", aliases=["s"])
     async def skip(self, ctx):
         if ctx.voice_client and ctx.voice_client.is_playing():
+            # プロセスのkillは play_next の冒頭に任せ、ここではstopのみ呼ぶ
             ctx.voice_client.stop()
             await ctx.send("⏭️ スキップしました。")
         else:
@@ -271,6 +279,11 @@ class YouTube(commands.Cog):
         guild_id = ctx.guild.id
         if guild_id in self.queues:
             self.queues[guild_id].clear()
+
+        if guild_id in self.active_processes:
+            proc = self.active_processes.pop(guild_id, None)
+            if proc and proc.poll() is None:
+                proc.kill()
 
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
